@@ -56,33 +56,46 @@ This is an **adaptive generation-budget evaluation**, not pass@2, best-of-two, o
 
 ### Current adaptive status
 
-`doc8` has completed its retry:
-
 | doc | target | 64K | 128K | 128K tokens | finish | result |
 |---:|:---:|:---:|:---:|---:|:---:|:---:|
 | 8 | D | no answer | D | 61,221 | stop | rescued |
+| 71 | D | no answer | A | 78,037 | stop | wrong |
 
-Current provisional Submitted-answer adaptive score after this rescue:
+Current provisional Submitted-answer adaptive score:
 
 **170 / 198 = 85.86%**
 
-Remaining retries:
+Retries completed: **2/8**. Remaining:
 
-`71, 79, 88, 118, 127, 130, 145`
+`79, 88, 118, 127, 130, 145`
+
+With doc71 fixed as incorrect under Submitted-answer, the maximum possible final adaptive Submitted-answer score is now **176/198 = 88.89%**, even if all six remaining retries are correct.
 
 The final adaptive score will be frozen only after all eight predefined retries are complete.
 
 ## Runtime / logging architecture
 
 ```text
-lm-eval / retry client
+retry client
         ↓
 127.0.0.1:1235  openai-log-proxy.py
         ↓
 127.0.0.1:1234  llama-qwen.service / llama-server
 ```
 
-The proxy persists each request/response pair to JSONL before returning the response to the evaluation client.
+The 128K logging proxy currently writes separately to:
+
+```text
+/media/nowr/Data/Evals/qwen38-gsq/length-retry-128k/gpqa-length-retry-128k-proxy.jsonl
+```
+
+The retry runner stores doc-indexed results in:
+
+```text
+/media/nowr/Data/Evals/qwen38-gsq/length-retry-128k/gpqa-length-retry-128k.jsonl
+```
+
+This separation keeps the original 64K baseline log frozen.
 
 ## Repository layout
 
@@ -90,7 +103,8 @@ The proxy persists each request/response pair to JSONL before returning the resp
 - [`results/64k-baseline.md`](results/64k-baseline.md) — frozen one-shot 64K results
 - [`results/adaptive-128k.md`](results/adaptive-128k.md) — adaptive retry status/results
 - [`audit/confirmed-discrepancies.md`](audit/confirmed-discrepancies.md) — confirmed parser/gold discrepancies
-- [`scripts/gpqa-live-score.py`](scripts/gpqa-live-score.py) — live scorer used during the run
+- [`scripts/gpqa-live-score.py`](scripts/gpqa-live-score.py) — original 64K live scorer
+- [`scripts/gpqa-adaptive-score.py`](scripts/gpqa-adaptive-score.py) — adaptive 64K→128K live scorer
 - [`scripts/openai-log-proxy.py`](scripts/openai-log-proxy.py) — local request/response logging proxy
 
 ## Reporting rule
