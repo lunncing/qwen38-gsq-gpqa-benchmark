@@ -1,1 +1,98 @@
-# qwen38-gsq-gpqa-benchmark
+# Qwen3.8-27B GSQ-RCO IQ3_S — GPQA-Diamond Evaluation
+
+Independent local evaluation of **Qwen3.8-27B GSQ-RCO IQ3_S** on the full **GPQA-Diamond** benchmark (198 questions).
+
+This repository separates four notions of accuracy so that model errors are not conflated with answer-extraction failures or benchmark defects:
+
+1. **Official parser** — strict benchmark-style parsing.
+2. **Normalized extractor** — deterministic tolerant extraction for common answer formats.
+3. **Submitted-answer** — normalized score plus only independently confirmed answer-extraction false negatives.
+4. **Strict audited semantic** — Submitted-answer plus independently verified benchmark-gold defects where the model genuinely solved the item.
+
+The **Submitted-answer score is the primary local model-quality metric** in this repository.
+
+## 64K one-shot baseline
+
+| Metric | Correct | Accuracy |
+|---|---:|---:|
+| Official parser | 144 / 198 | 72.73% |
+| Normalized extractor | 166 / 198 | 83.84% |
+| **Submitted-answer** | **169 / 198** | **85.35%** |
+| Strict audited semantic | 170 / 198 | 85.86% |
+
+Confirmed answer-extraction false negatives included in Submitted-answer:
+
+- `doc101`: target B, actual submitted B
+- `doc108`: target A, actual submitted A
+- `doc178`: target C, actual submitted C
+
+The strict audited semantic score additionally restores `doc17`, where an independent derivation supports the model answer rather than the released benchmark target.
+
+## 64K generation-limit cases
+
+Eight questions ended with `finish_reason=length` at 64,000 completion tokens:
+
+`8, 71, 79, 88, 118, 127, 130, 145`
+
+Seven of the eight had no final answer at the 64K cap. `doc118` had an answer present but still ended with `finish_reason=length`.
+
+## Adaptive 64K → 128K evaluation
+
+A separate adaptive experiment retries **all and only** questions whose first attempt ended with `finish_reason=length`.
+
+The retry rule is grade-independent and was fixed before the retry outcomes were known:
+
+- start again from the original prompt;
+- keep the same model and request settings;
+- keep `seed=1234`;
+- keep `temperature=1.0`, `top_p=0.95`, `top_k=20`, `min_p=0.0`;
+- keep `presence_penalty=0.0`, `repeat_penalty=1.0`;
+- keep `enable_thinking=true`, `reasoning_effort=xhigh`;
+- change the output budget from `max_tokens=64000` to `max_tokens=128000`;
+- the 128K outcome unconditionally replaces the 64K outcome in the adaptive score;
+- no third retry is performed if 128K also ends in `length`.
+
+This is an **adaptive generation-budget evaluation**, not pass@2, best-of-two, or self-consistency.
+
+### Current adaptive status
+
+`doc8` has completed its retry:
+
+| doc | target | 64K | 128K | 128K tokens | finish | result |
+|---:|:---:|:---:|:---:|---:|:---:|:---:|
+| 8 | D | no answer | D | 61,221 | stop | rescued |
+
+Current provisional Submitted-answer adaptive score after this rescue:
+
+**170 / 198 = 85.86%**
+
+Remaining retries:
+
+`71, 79, 88, 118, 127, 130, 145`
+
+The final adaptive score will be frozen only after all eight predefined retries are complete.
+
+## Runtime / logging architecture
+
+```text
+lm-eval / retry client
+        ↓
+127.0.0.1:1235  openai-log-proxy.py
+        ↓
+127.0.0.1:1234  llama-qwen.service / llama-server
+```
+
+The proxy persists each request/response pair to JSONL before returning the response to the evaluation client.
+
+## Repository layout
+
+- [`methodology.md`](methodology.md) — scoring definitions and retry protocol
+- [`results/64k-baseline.md`](results/64k-baseline.md) — frozen one-shot 64K results
+- [`results/adaptive-128k.md`](results/adaptive-128k.md) — adaptive retry status/results
+- [`audit/confirmed-discrepancies.md`](audit/confirmed-discrepancies.md) — confirmed parser/gold discrepancies
+- [`scripts/gpqa-live-score.py`](scripts/gpqa-live-score.py) — live scorer used during the run
+- [`scripts/openai-log-proxy.py`](scripts/openai-log-proxy.py) — local request/response logging proxy
+
+## Reporting rule
+
+The **64K one-shot result and the adaptive 64K→128K result are different inference protocols and are reported separately**. The adaptive result must not be presented as a one-shot pass@1 score.
