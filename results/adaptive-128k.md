@@ -1,6 +1,6 @@
 # Adaptive 64K → 128K Retry Results
 
-This page tracks the separately reported adaptive generation-budget experiment.
+This page records the completed adaptive generation-budget experiment.
 
 ## Trigger
 
@@ -16,46 +16,66 @@ The predefined retry set is:
 
 The 128K retry outcome unconditionally replaces the corresponding 64K outcome in the adaptive score.
 
-No result is selected based on correctness.
+No result is selected based on correctness. Each retry starts again from the original prompt, and no third retry is performed if the 128K attempt also ends in `length`.
 
-## Current status
+## Final retry results
 
-| doc | target | 64K final | 128K answer | 128K tokens | finish | status |
-|---:|:---:|:---:|:---:|---:|:---:|---|
-| 8 | D | none | D | 61,221 | stop | rescued |
-| 71 | D | none | A | 78,037 | stop | still wrong |
-| 79 | B | none | — | — | — | pending |
-| 88 | B | none | — | — | — | pending |
-| 118 | D | A (wrong) | — | — | — | pending |
-| 127 | C | none | — | — | — | pending |
-| 130 | B | none | — | — | — | pending |
-| 145 | A | none | — | — | — | pending |
+| doc | target | 128K answer | completion tokens | finish | result | note |
+|---:|:---:|:---:|---:|:---:|:---:|---|
+| 8 | D | D | 72,622 | stop | ✓ | rescued |
+| 71 | D | A | 78,037 | stop | ✗ | natural stop, wrong |
+| 79 | B | — | 128,000 | length | ✗ | no submitted final answer |
+| 88 | B | D | 89,399 | stop | ✗ | recovered from proxy after runner transport reset |
+| 118 | D | D | 29,219 | stop | ✓ | rescued |
+| 127 | C | — | 128,000 | length | ✗ | no submitted final answer |
+| 130 | B | A | 49,563 | stop | ✗ | natural stop, wrong |
+| 145 | A | C | 84,577 | stop | ✗ | natural stop, wrong |
 
-## Provisional adaptive Submitted-answer score
+All eight predefined retries are semantically complete.
 
-64K Submitted-answer baseline:
+- Correct / rescued: **2 / 8**
+- Still wrong: **6 / 8**
+- Reached the 128K generation limit again: **2 / 8** (`doc79`, `doc127`)
+- Natural `stop` but incorrect: **4 / 8** (`doc71`, `doc88`, `doc130`, `doc145`)
+- Total retry completion tokens: **659,417**
+- Mean retry completion tokens: **82,427.1**
+
+### doc88 transport note
+
+`doc88` completed normally at the model/proxy layer with:
+
+- target `B`
+- submitted answer `D`
+- `finish_reason=stop`
+- `completion_tokens=89399`
+
+The retry runner had been paused while the already-issued request continued. The logging proxy persisted the complete response, but the runner later recorded a `ChunkedEncodingError / Connection reset by peer` rather than a normal `status=200` record. The recovered proxy response is therefore used for the semantic adaptive result while the original runner error remains unchanged for auditability.
+
+## Final adaptive scores
+
+Frozen 64K Submitted-answer baseline:
 
 **169 / 198 = 85.35%**
 
-Completed 128K retries:
+The 128K retries rescue exactly two previously incorrect length-triggered cases (`doc8` and `doc118`):
 
-- `doc8`: D → D, rescued, +1
-- `doc71`: no answer → A against target D, still wrong, +0
+**171 / 198 = 86.36%**
 
-Current provisional adaptive score:
+Thus adaptive generation budgeting changes the primary Submitted-answer result by:
 
-**170 / 198 = 85.86%**
+**+2 questions = +1.01 percentage points**
 
-Retries completed: **2 / 8**  
-Retries remaining: **6 / 8**  
-Rescued: **1**  
-Still wrong after retry: **1**
+The Strict audited semantic baseline is **170 / 198 = 85.86%**. Adding the same two rescued retry cases gives:
 
-Because doc71 is now fixed as incorrect under the Submitted-answer metric, the best possible final score if all six remaining retries are correct is:
+**172 / 198 = 86.87%**
 
-**176 / 198 = 88.89%**
+These adaptive results are now final under the predefined protocol.
 
-This remains provisional until all eight predefined retry cases are complete.
+## Benchmark-audit note: doc79
+
+`doc79` is still incorrect under Submitted-answer because the 128K retry produced no final answer. Separately, audit of the benchmark item found that the revised prompt removed critical information from the original author version: the `RC` flag and an additional `GAA → 165` example. Under the original intended rule, reverse complement → codon translation → peptide molecular weight gives target `B = 315`; under the revised two-example prompt, the hidden algorithm is underdetermined.
+
+This benchmark-quality classification does **not** add credit to Submitted-answer, Strict audited semantic, or broad-defensible scoring because the model submitted no final answer. It is relevant only to benchmark-quality / clean-denominator analyses.
 
 ## Important protocol note
 
