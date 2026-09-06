@@ -54,24 +54,40 @@ The retry rule is grade-independent and was fixed before the retry outcomes were
 
 This is an **adaptive generation-budget evaluation**, not pass@2, best-of-two, or self-consistency.
 
-### Current adaptive status
+### Final adaptive results
 
-| doc | target | 64K | 128K | 128K tokens | finish | result |
-|---:|:---:|:---:|:---:|---:|:---:|:---:|
-| 8 | D | no answer | D | 61,221 | stop | rescued |
-| 71 | D | no answer | A | 78,037 | stop | wrong |
+| doc | target | 128K answer | tokens | finish | result |
+|---:|:---:|:---:|---:|:---:|:---:|
+| 8 | D | D | 72,622 | stop | ✓ rescued |
+| 71 | D | A | 78,037 | stop | ✗ |
+| 79 | B | — | 128,000 | length | ✗ |
+| 88 | B | D | 89,399 | stop | ✗ recovered from proxy |
+| 118 | D | D | 29,219 | stop | ✓ rescued |
+| 127 | C | — | 128,000 | length | ✗ |
+| 130 | B | A | 49,563 | stop | ✗ |
+| 145 | A | C | 84,577 | stop | ✗ |
 
-Current provisional Submitted-answer adaptive score:
+All **8/8** predefined retries are complete. Exactly two cases were rescued: `doc8` and `doc118`.
 
-**170 / 198 = 85.86%**
+Final adaptive Submitted-answer score:
 
-Retries completed: **2/8**. Remaining:
+**171 / 198 = 86.36%**
 
-`79, 88, 118, 127, 130, 145`
+Final adaptive Strict audited semantic score:
 
-With doc71 fixed as incorrect under Submitted-answer, the maximum possible final adaptive Submitted-answer score is now **176/198 = 88.89%**, even if all six remaining retries are correct.
+**172 / 198 = 86.87%**
 
-The final adaptive score will be frozen only after all eight predefined retries are complete.
+Relative to the frozen 64K Submitted-answer baseline, adaptive 128K retry adds:
+
+**+2 questions = +1.01 percentage points**
+
+Two retries (`doc79`, `doc127`) reached the 128K completion limit again without a final answer. Four more (`doc71`, `doc88`, `doc130`, `doc145`) stopped naturally but remained incorrect.
+
+`doc88` is a transport/logging edge case: its complete `stop`, 89,399-token response was persisted by the logging proxy before the paused runner later encountered `Connection reset by peer`. The recovered proxy result is target B → submitted D, so it is semantically complete and incorrect; the original runner error is retained rather than rewritten.
+
+`doc79` is separately classified in benchmark audit as **BROKEN / MISSING_CRITICAL_CONTEXT** because the revised benchmark prompt removed the original `RC` clue and an additional example. That classification does not grant Submitted-answer credit because the model produced no final answer.
+
+See [`results/adaptive-128k.md`](results/adaptive-128k.md) for the full retry record.
 
 ## Runtime / logging architecture
 
@@ -83,7 +99,7 @@ retry client
 127.0.0.1:1234  llama-qwen.service / llama-server
 ```
 
-The 128K logging proxy currently writes separately to:
+The 128K logging proxy writes separately to:
 
 ```text
 /media/nowr/Data/Evals/qwen38-gsq/length-retry-128k/gpqa-length-retry-128k-proxy.jsonl
@@ -95,16 +111,16 @@ The retry runner stores doc-indexed results in:
 /media/nowr/Data/Evals/qwen38-gsq/length-retry-128k/gpqa-length-retry-128k.jsonl
 ```
 
-This separation keeps the original 64K baseline log frozen.
+This separation keeps the original 64K baseline metrics frozen.
 
 ## Repository layout
 
 - [`methodology.md`](methodology.md) — scoring definitions and retry protocol
 - [`results/64k-baseline.md`](results/64k-baseline.md) — frozen one-shot 64K results
-- [`results/adaptive-128k.md`](results/adaptive-128k.md) — adaptive retry status/results
-- [`audit/confirmed-discrepancies.md`](audit/confirmed-discrepancies.md) — confirmed parser/gold discrepancies
+- [`results/adaptive-128k.md`](results/adaptive-128k.md) — completed adaptive retry results
+- [`audit/confirmed-discrepancies.md`](audit/confirmed-discrepancies.md) — confirmed parser/gold/benchmark-quality discrepancies
 - [`scripts/gpqa-live-score.py`](scripts/gpqa-live-score.py) — original 64K live scorer
-- [`scripts/gpqa-adaptive-score.py`](scripts/gpqa-adaptive-score.py) — adaptive 64K→128K live scorer
+- [`scripts/gpqa-adaptive-score.py`](scripts/gpqa-adaptive-score.py) — adaptive 64K→128K scorer, including the audited doc88 proxy recovery
 - [`scripts/openai-log-proxy.py`](scripts/openai-log-proxy.py) — local request/response logging proxy
 
 ## Reporting rule
