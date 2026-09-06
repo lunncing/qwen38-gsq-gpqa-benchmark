@@ -35,6 +35,23 @@ DEFAULT_LOG = (
 # Example: {123: "C"}
 RETRY_SUBMITTED_OVERRIDES = {}
 
+# doc88 is a transport/logging edge case. The retry runner was SIGSTOP'd while
+# the already-issued request continued. The logging proxy persisted the full
+# response (target B, answer D, stop, 89399 tokens), but when the runner later
+# resumed it recorded ChunkedEncodingError / Connection reset by peer instead
+# of status=200. Keep the raw runner log immutable and recover the audited
+# semantic result here. A future status=200 runner record always takes priority.
+RECOVERED_RETRY_RESULTS = {
+    88: {
+        "target": "B",
+        "pred": "D",
+        "final": "**(D) triplet**",
+        "finish": "stop",
+        "tokens": 89399,
+        "source": "proxy-recovered",
+    },
+}
+
 
 def content_to_text(content):
     if isinstance(content, str):
@@ -92,45 +109,51 @@ def load_latest_successful(path):
     attempts = 0
     http_errors = 0
 
-    if not os.path.exists(path):
-        return latest, attempts, http_errors
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try:
+                    x = json.loads(line)
+                except Exception:
+                    continue
 
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            try:
-                x = json.loads(line)
-            except Exception:
-                continue
+                attempts += 1
+                if x.get("status") != 200:
+                    http_errors += 1
+                    continue
 
-            attempts += 1
-            if x.get("status") != 200:
-                http_errors += 1
-                continue
+                try:
+                    doc_id = int(x.get("doc_id"))
+                except Exception:
+                    continue
 
-            try:
-                doc_id = int(x.get("doc_id"))
-            except Exception:
-                continue
+                if doc_id not in RETRY_IDS:
+                    continue
 
-            if doc_id not in RETRY_IDS:
-                continue
+                resp = x.get("response") or {}
+                choice = (resp.get("choices") or [{}])[0]
+                msg = choice.get("message") or {}
+                usage = resp.get("usage") or {}
 
-            resp = x.get("response") or {}
-            choice = (resp.get("choices") or [{}])[0]
-            msg = choice.get("message") or {}
-            usage = resp.get("usage") or {}
+                final = content_to_text(msg.get("content")).strip()
+                target = target_letter(x.get("target"))
+                pred = RETRY_SUBMITTED_OVERRIDES.get(doc_id) or extract_answer(final)
 
-            final = content_to_text(msg.get("content")).strip()
-            target = target_letter(x.get("target"))
-            pred = RETRY_SUBMITTED_OVERRIDES.get(doc_id) or extract_answer(final)
+                latest[doc_id] = {
+                    "target": target,
+                    "pred": pred,
+                    "final": final,
+                    "finish": choice.get("finish_reason"),
+                    "tokens": usage.get("completion_tokens"),
+                    "source": "runner",
+                }
 
-            latest[doc_id] = {
-                "target": target,
-                "pred": pred,
-                "final": final,
-                "finish": choice.get("finish_reason"),
-                "tokens": usage.get("completion_tokens"),
-            }
+    # Merge audited proxy recoveries only when the runner has no successful
+    # record for that doc. This preserves the raw error record and makes the
+    # recovery explicit rather than fabricating status=200 in the JSONL.
+    for doc_id, recovered in RECOVERED_RETRY_RESULTS.items():
+        if doc_id not in latest:
+            latest[doc_id] = dict(recovered)
 
     return latest, attempts, http_errors
 
@@ -140,6 +163,10 @@ def score_once(path):
 
     completed = len(latest)
     pending = len(RETRY_IDS) - completed
+    runner_success = sum(1 for r in latest.values() if r.get("source") == "runner")
+    proxy_recovered = sum(
+        1 for r in latest.values() if r.get("source") == "proxy-recovered"
+    )
 
     adaptive_correct = BASELINE_SUBMITTED_CORRECT
     rescued = 0
@@ -155,7 +182,7 @@ def score_once(path):
         r = latest.get(doc_id)
 
         if r is None:
-            rows.append((doc_id, "-", "-", "-", "pending", "-", ""))
+            rows.append((doc_id, "-", "-", "-", "pending", "-", "-", ""))
             continue
 
         target = r["target"]
@@ -185,6 +212,7 @@ def score_once(path):
                 str(r["tokens"] or "-"),
                 str(r["finish"] or "-"),
                 result,
+                r.get("source", "-"),
                 preview,
             )
         )
@@ -192,40 +220,55 @@ def score_once(path):
     # Since all pending retry-trigger items were baseline-wrong, the maximum
     # possible final score is the current adaptive score plus all pending items.
     max_possible = adaptive_correct + sum(
-        1 for doc_id in RETRY_IDS
+        1
+        for doc_id in RETRY_IDS
         if doc_id not in latest and not BASELINE_RETRY_CORRECT[doc_id]
     )
 
-    print("=" * 96)
+    print("=" * 112)
     print("GPQA-Diamond Adaptive Submitted-answer — 64K → 128K-on-length")
-    print("=" * 96)
+    print("=" * 112)
     print(f"Retry log              : {path}")
-    print(f"64K Submitted baseline : {BASELINE_SUBMITTED_CORRECT}/{TOTAL} = "
-          f"{100*BASELINE_SUBMITTED_CORRECT/TOTAL:.2f}%")
+    print(
+        f"64K Submitted baseline : {BASELINE_SUBMITTED_CORRECT}/{TOTAL} = "
+        f"{100*BASELINE_SUBMITTED_CORRECT/TOTAL:.2f}%"
+    )
     print()
     print(f"Retries completed      : {completed}/{len(RETRY_IDS)}")
     print(f"Retries remaining      : {pending}")
-    print(f"Successful retry HTTP  : {completed}")
+    print(f"Runner status=200      : {runner_success}")
+    print(f"Recovered from proxy   : {proxy_recovered}")
     print(f"Log records            : {attempts}")
-    print(f"HTTP errors            : {http_errors}")
+    print(f"Runner HTTP/errors     : {http_errors}")
     print(f"128K finish=length     : {length_again}")
     print()
-    print(f"Retry correct          : {retry_correct_count}/{completed}" if completed else "Retry correct          : 0/0")
+    print(
+        f"Retry correct          : {retry_correct_count}/{completed}"
+        if completed
+        else "Retry correct          : 0/0"
+    )
     print(f"Rescued                : {rescued}")
     print(f"Still wrong            : {still_wrong}")
     print(f"Became wrong           : {became_wrong}")
     print()
-    print(f"Adaptive Submitted     : {adaptive_correct}/{TOTAL} = "
-          f"{100*adaptive_correct/TOTAL:.2f}%")
-    print(f"Maximum possible final : {max_possible}/{TOTAL} = "
-          f"{100*max_possible/TOTAL:.2f}%")
+    print(
+        f"Adaptive Submitted     : {adaptive_correct}/{TOTAL} = "
+        f"{100*adaptive_correct/TOTAL:.2f}%"
+    )
+    print(
+        f"Maximum possible final : {max_possible}/{TOTAL} = "
+        f"{100*max_possible/TOTAL:.2f}%"
+    )
     print()
-    print(f"{'doc':>4} {'tgt':>3} {'128K':>4} {'tokens':>8} {'finish':>8} {'ok':>3}  final")
-    print("-" * 96)
-    for doc_id, tgt, pred, tokens, finish, result, preview in rows:
+    print(
+        f"{'doc':>4} {'tgt':>3} {'128K':>4} {'tokens':>8} {'finish':>8} "
+        f"{'ok':>3} {'source':>15}  final"
+    )
+    print("-" * 112)
+    for doc_id, tgt, pred, tokens, finish, result, source, preview in rows:
         print(
             f"{doc_id:>4} {tgt:>3} {pred:>4} {tokens:>8} "
-            f"{finish:>8} {result:>3}  {preview}"
+            f"{finish:>8} {result:>3} {source:>15}  {preview}"
         )
 
 
